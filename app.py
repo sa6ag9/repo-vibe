@@ -18,7 +18,7 @@ Endpoints
 Config (environment, never committed):
   GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY_PATH, WEBHOOK_SECRET, PORT (default 8080)
 """
-import base64, hashlib, hmac, json, os, time, urllib.request
+import base64, hashlib, hmac, json, os, time, urllib.request, urllib.error
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -131,9 +131,23 @@ permissions and asks <b>you</b> to confirm - that human click is required by Git
                 return self._send(400, "use /badge/<owner>/<repo>", "text/plain")
             _, owner, repo = parts
             key = (owner, repo)
-            if key not in _cache:
-                stats = repo_vibe.fetch_stats(owner, repo, token_for(owner))
-                _cache[key] = repo_vibe.render_svg(stats)
+            # This endpoint is public: neither a privileged installation token
+            # nor previously cached data may disclose a private repository.
+            try:
+                info = api(f"/repos/{owner}/{repo}")
+                if info.get("private") is not False:
+                    _cache.pop(key, None)
+                    return self._send(404, "repository not found", "text/plain")
+                if key not in _cache:
+                    stats = repo_vibe.fetch_stats(owner, repo, None)
+                    _cache[key] = repo_vibe.render_svg(stats)
+            except urllib.error.HTTPError as exc:
+                _cache.pop(key, None)
+                status = 404 if exc.code == 404 else 503
+                return self._send(status, "repository unavailable", "text/plain")
+            except Exception:
+                _cache.pop(key, None)
+                return self._send(503, "repository unavailable", "text/plain")
             self._send(200, _cache[key], "image/svg+xml")
         else:
             self._send(404, "not found", "text/plain")
