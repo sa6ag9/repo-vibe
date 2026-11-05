@@ -103,6 +103,35 @@ class H(BaseHTTPRequestHandler):
             self._send(410, "Automatic GitHub App setup is unavailable. "
                        "Public badges use public repository data only. "
                        "Configure an optional signed repository webhook manually.", "text/plain")
+        elif u.path.startswith("/status/"):
+            parts = u.path.strip("/").split("/")
+            if len(parts) != 3:
+                return self._send(400, "use /status/<owner>/<repo>", "text/plain")
+            _, owner, repo = parts
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}", owner) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", repo) or repo in (".", ".."):
+                return self._send(400, "invalid repository name", "text/plain")
+            # Machine-readable, public-only observability. No installation
+            # token or privileged cache can ever influence this endpoint.
+            try:
+                info = api(f"/repos/{owner}/{repo}")
+                if info.get("private") is not False:
+                    return self._send(404, "repository not found", "text/plain")
+                stats = repo_vibe.fetch_stats(owner, repo, None)
+                # Only JSON-compatible primitive fields; never expose API
+                # credentials or upstream response bodies.
+                if not isinstance(stats, dict):
+                    return self._send(503, "stats unavailable", "text/plain")
+                allowed = {"stars", "build", "lines_today", "commits_today", "activity_status"}
+                result = {k: v for k, v in stats.items()
+                          if k in allowed and (v is None or type(v) in (str,int,float,bool))}
+                result["mood"] = repo_vibe.mood_for(stats.get("messages", []))[0]
+                result["schema"] = "repo-vibe.public-status.v1"
+                result["repository"] = owner + "/" + repo
+                return self._send(200, json.dumps(result, sort_keys=True, allow_nan=False), "application/json")
+            except urllib.error.HTTPError as exc:
+                return self._send(404 if exc.code == 404 else 503, "repository unavailable", "text/plain")
+            except Exception:
+                return self._send(503, "repository unavailable", "text/plain")
         elif u.path.startswith("/badge/"):
             parts = u.path.strip("/").split("/")
             if len(parts) != 3:
